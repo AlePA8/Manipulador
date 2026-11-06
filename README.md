@@ -13,7 +13,7 @@ Proyecto de un brazo robótico de 6 servomotores controlado con un ESP32. Utiliz
 
 ```text
 main.py                  # Inicia el programa
-firmware/Manipulador/    # Código del ESP32
+firmware/                # Código del ESP32
 src/modelo/              # D-H, cinemática inversa y calibraciones
 src/controlador/         # Comunicación USB y rutinas
 src/vista/               # Interfaz, matrices y modelo 3D
