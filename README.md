@@ -17,7 +17,6 @@ firmware/                # Código del ESP32
 src/modelo/              # D-H, cinemática inversa y calibraciones
 src/controlador/         # Comunicación USB y rutinas
 src/vista/               # Interfaz, matrices y modelo 3D
-tests/                   # Pruebas del programa
 ```
 
 **Python debe permanecer abierto y el ESP32 conectado por USB para ejecutar las rutinas.**
