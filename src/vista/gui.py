@@ -17,7 +17,7 @@ from src.vista.dibujo import Escena3D
 class Interfaz(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Manipulador | D-H en vivo")
+        self.title("Manipulador - GUI")
         self.geometry("1340x790")
         self.minsize(1030, 660)
         self.controlador = Controlador()
@@ -30,7 +30,14 @@ class Interfaz(tk.Tk):
         self.tcp = tk.StringVar(value="X: --    Y: --    Z: --")
         self.puerto = tk.StringVar()
         self.matriz = tk.StringVar(value="T05")
-        self.xyz = [tk.StringVar(value=v) for v in ("20", "0", "5", "-25")]
+        # Valores normalizados 0-100: respetan la calibracion del firmware.
+        self.servo_manual = [tk.DoubleVar(value=dh.HOME[i]) for i in range(5)]
+        self.pinza_manual = tk.DoubleVar(value=dh.HOME[5])
+        self.pinza_abierta = tk.StringVar(value=f"{dh.PINZA_ABIERTA:.1f}")
+        self.pinza_cerrada = tk.StringVar(value=f"{dh.PINZA_CERRADA:.1f}")
+        self.seccion = tk.StringVar(value="Rutinas")
+        self.distancia_sensor = tk.StringVar(value="-- cm")
+        self._midiendo = False
         self._crear_ventana()
         self.protocol("WM_DELETE_WINDOW", self._cerrar)
         self.after(120, self._actualizar)
@@ -39,10 +46,27 @@ class Interfaz(tk.Tk):
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
 
-        izquierdo = ttk.Frame(self, padding=12)
-        izquierdo.grid(row=0, column=0, sticky="ns")
-        izquierdo.configure(width=265)
-        izquierdo.grid_propagate(False)
+        # Lateral desplazable: todos los servos, sensor y pinza caben
+        # incluso en una pantalla de 790 px de alto.
+        marco_lateral = ttk.Frame(self, width=290)
+        marco_lateral.grid(row=0, column=0, sticky="ns")
+        marco_lateral.grid_propagate(False)
+        marco_lateral.rowconfigure(0, weight=1)
+        marco_lateral.columnconfigure(0, weight=1)
+        self.lienzo_lateral = tk.Canvas(marco_lateral, width=275,
+                                       highlightthickness=0, borderwidth=0)
+        self.lienzo_lateral.grid(row=0, column=0, sticky="nsew")
+        scroll_lateral = ttk.Scrollbar(marco_lateral, orient="vertical",
+                                      command=self.lienzo_lateral.yview)
+        scroll_lateral.grid(row=0, column=1, sticky="ns")
+        self.lienzo_lateral.configure(yscrollcommand=scroll_lateral.set)
+        izquierdo = ttk.Frame(self.lienzo_lateral, padding=12)
+        ventana_lateral = self.lienzo_lateral.create_window(
+            (0, 0), window=izquierdo, anchor="nw")
+        izquierdo.bind("<Configure>", lambda e: self.lienzo_lateral.configure(
+            scrollregion=self.lienzo_lateral.bbox("all")))
+        self.lienzo_lateral.bind("<Configure>", lambda e: self.lienzo_lateral.itemconfigure(
+            ventana_lateral, width=e.width))
         centro = ttk.Frame(self, padding=6)
         centro.grid(row=0, column=1, sticky="nsew")
         centro.rowconfigure(1, weight=1)
@@ -66,24 +90,114 @@ class Interfaz(tk.Tk):
         ttk.Button(izquierdo, text="STOP", command=lambda: self._accion(self.controlador.detener)).pack(fill="x", pady=2)
         ttk.Button(izquierdo, text="Reanudar", command=lambda: self._accion(self.controlador.reanudar)).pack(fill="x", pady=2)
 
-        ttk.Separator(izquierdo).pack(fill="x", pady=16)
-        ttk.Label(izquierdo, text="RUTINAS DESDE BLYNK", font=("Arial", 11, "bold")).pack(anchor="w")
-        ttk.Label(izquierdo, text=(
-            "1. Selecciona la rutina en Blynk (V8).\n"
-            "2. Pulsa EJECUTAR (V9).\n"
-            "3. Python recibe RUTINA,n y mueve el brazo.\n\n"
-            "Deja este programa abierto y conectado."
-        ), wraplength=238, justify="left").pack(anchor="w", pady=(8, 12))
+        ttk.Separator(izquierdo).pack(fill="x", pady=(12, 10))
+        ttk.Label(izquierdo, text="CONTROL DESDE PYTHON",
+                  font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 5))
+        self.selector_seccion = ttk.Combobox(
+            izquierdo, textvariable=self.seccion, state="readonly",
+            values=("Rutinas", "En caso de que no queden mensajes en Blynk"))
+        self.selector_seccion.pack(fill="x", pady=(0, 9))
+        self.selector_seccion.bind("<<ComboboxSelected>>", self._cambiar_seccion)
 
-        ttk.Separator(izquierdo).pack(fill="x", pady=12)
-        ttk.Label(izquierdo, text="PRUEBA DE CINEMÁTICA INVERSA", font=("Arial", 10, "bold")).pack(anchor="w")
-        campos = ttk.Frame(izquierdo)
-        campos.pack(fill="x", pady=6)
-        for i, nombre in enumerate(("X [cm]", "Y [cm]", "Z [cm]", "φ [°]")):
-            ttk.Label(campos, text=nombre).grid(row=i, column=0, sticky="w", pady=3)
-            ttk.Entry(campos, textvariable=self.xyz[i], width=11).grid(row=i, column=1, sticky="e", pady=3)
-        ttk.Button(izquierdo, text="Resolver y mover", command=self._mover_xyz).pack(fill="x", pady=5)
-        ttk.Label(izquierdo, text="Usar solo con recorrido físico despejado.", wraplength=230).pack(anchor="w")
+        self.panel_rutinas = ttk.Frame(izquierdo)
+        self.panel_rutinas.pack(fill="x")
+        ttk.Label(self.panel_rutinas, text="RUTINAS",
+                  font=("Arial", 10, "bold")).pack(anchor="w")
+        self.rutina_seleccion = tk.StringVar(value="3 - Solo escanear")
+        ttk.Combobox(self.panel_rutinas, textvariable=self.rutina_seleccion,
+                     values=("1 - Apilar", "2 - Ordenar en fila",
+                             "3 - Solo escanear", "4 - Apilado enseñado"),
+                     state="readonly").pack(fill="x", pady=(8, 5))
+        self.boton_rutina = ttk.Button(self.panel_rutinas,
+                                      text="Iniciar rutina desde GUI",
+                                      command=self._ejecutar_rutina)
+        self.boton_rutina.pack(fill="x", pady=(0, 8))
+
+        # Panel en caso de que BLYNK supere limite de mensajes.
+        self.panel_manual = ttk.Frame(izquierdo)
+
+        ttk.Separator(self.panel_manual).pack(fill="x", pady=(2, 5))
+        ttk.Label(self.panel_manual, text="SENSOR ULTRASONICO",
+                  font=("Arial", 10, "bold")).pack(anchor="w", pady=(0, 3))
+        fila_sensor = ttk.Frame(self.panel_manual)
+        fila_sensor.pack(fill="x", pady=(0, 4))
+        self.boton_medir = ttk.Button(fila_sensor, text="Medir distancia",
+                                      command=self._medir_distancia)
+        self.boton_medir.pack(side="left", fill="x", expand=True)
+        ttk.Label(fila_sensor, textvariable=self.distancia_sensor,
+                  width=10, anchor="e").pack(side="left", padx=(6, 0))
+
+
+        nombres = ("S1 · Base", "S2 · Hombro", "S3 · Codo",
+                   "S4 · Giro muñeca", "S5 · Muñeca")
+        self.boton_servo = []
+        self.servo_texto = []
+        for i, nombre in enumerate(nombres):
+            fila_servo = ttk.Frame(self.panel_manual)
+            fila_servo.pack(fill="x", pady=1)
+            ttk.Label(fila_servo, text=nombre, width=18).pack(side="left")
+            t = tk.StringVar(value=f"{self.servo_manual[i].get():.1f}%")
+            self.servo_texto.append(t)
+            ttk.Label(fila_servo, textvariable=t, width=7).pack(side="right")
+            fila_escala = ttk.Frame(self.panel_manual)
+            fila_escala.pack(fill="x", pady=(0, 3))
+            ttk.Scale(fila_escala, from_=0, to=100,
+                      variable=self.servo_manual[i],
+                      command=lambda v, k=i: self.servo_texto[k].set(f"{float(v):.1f}%")
+                      ).pack(side="left", fill="x", expand=True)
+            boton = ttk.Button(fila_escala, text="Mover", width=7,
+                               command=lambda k=i: self._mover_servo(k))
+            boton.pack(side="left", padx=(7, 0))
+            self.boton_servo.append(boton)
+
+        fila_botones = ttk.Frame(self.panel_manual)
+        fila_botones.pack(fill="x", pady=(3, 6))
+        self.boton_todos = ttk.Button(fila_botones, text="Mover los 5 servos",
+                                        command=self._mover_cinco)
+        self.boton_todos.pack(side="left", fill="x", expand=True)
+        ttk.Button(fila_botones, text="Leer estado",
+                   command=self._cargar_estado).pack(side="left", padx=(5, 0))
+
+        ttk.Separator(self.panel_manual).pack(fill="x", pady=(2, 7))
+        ttk.Label(self.panel_manual, text="PINZA (SERVO 6)",
+                  font=("Arial", 10, "bold")).pack(anchor="w", pady=(0, 3))
+        fila_pinza = ttk.Frame(self.panel_manual)
+        fila_pinza.pack(fill="x", pady=(0, 5))
+        self.pinza_texto = tk.StringVar(value=f"{self.pinza_manual.get():.1f}%")
+        ttk.Scale(fila_pinza, from_=0, to=100, variable=self.pinza_manual,
+                  command=lambda v: self.pinza_texto.set(f"{float(v):.1f}%")
+                  ).pack(side="left", fill="x", expand=True)
+        ttk.Label(fila_pinza, textvariable=self.pinza_texto, width=7).pack(side="left", padx=(4, 0))
+        self.boton_pinza_posicion = ttk.Button(self.panel_manual,
+                                              text="Mover pinza a ese porcentaje",
+                                              command=self._mover_pinza)
+        self.boton_pinza_posicion.pack(fill="x", pady=(0, 5))
+        fila_cal = ttk.Frame(self.panel_manual)
+        fila_cal.pack(fill="x", pady=(0, 5))
+        ttk.Label(fila_cal, text="Abierta %").grid(row=0, column=0, sticky="w")
+        ttk.Entry(fila_cal, textvariable=self.pinza_abierta, width=7).grid(row=0, column=1, padx=(3, 10))
+        ttk.Label(fila_cal, text="Cerrada %").grid(row=0, column=2, sticky="w")
+        ttk.Entry(fila_cal, textvariable=self.pinza_cerrada, width=7).grid(row=0, column=3, padx=(3, 0))
+        self.boton_guardar_pinza = ttk.Button(
+            self.panel_manual, text="Guardar apertura / cierre",
+            command=self._guardar_pinza)
+        self.boton_guardar_pinza.pack(fill="x", pady=(0, 4))
+        fila_abrir_cerrar = ttk.Frame(self.panel_manual)
+        fila_abrir_cerrar.pack(fill="x")
+        self.boton_abrir = ttk.Button(fila_abrir_cerrar, text="Abrir pinza",
+                                      command=lambda: self._pinza_abrir_cerrar(True))
+        self.boton_abrir.pack(side="left", fill="x", expand=True)
+        self.boton_cerrar = ttk.Button(fila_abrir_cerrar, text="Cerrar pinza",
+                                       command=lambda: self._pinza_abrir_cerrar(False))
+        self.boton_cerrar.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.controles_manuales = self.boton_servo + [
+            self.boton_todos, self.boton_pinza_posicion,
+            self.boton_guardar_pinza, self.boton_abrir, self.boton_cerrar]
+        # Ningun movimiento habilitado antes de conectar y activar el brazo.
+        self.boton_rutina.state(["disabled"])
+        self.boton_medir.state(["disabled"])
+        for boton in self.controles_manuales:
+            boton.state(["disabled"])
 
         ttk.Label(centro, text="MODELO 3D · ARTICULACIONES Y EJES D-H", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w", pady=6)
         fig = Figure(figsize=(7, 6), dpi=95)
@@ -146,15 +260,102 @@ class Interfaz(tk.Tk):
                     self.controlador.avisar("boton", boton)
         threading.Thread(target=trabajo, daemon=True).start()
 
-    def _mover_xyz(self):
+    def _cambiar_seccion(self, _evento=None):
+        self.lienzo_lateral.yview_moveto(0)
+        self.panel_rutinas.pack_forget()
+        self.panel_manual.pack_forget()
+        if self.seccion.get() == "En caso de que no queden mensajes en Blynk":
+            self.panel_manual.pack(fill="x")
+            if self.controlador.robot is not None:
+                # Lee la calibracion guardada en el ESP32 sin cambiarla.
+                self._accion(self.controlador.leer_calibracion_pinza)
+        else:
+            self.panel_rutinas.pack(fill="x")
+
+    def _cargar_estado(self):
+        if self.controlador.robot is None:
+            messagebox.showerror("Sin conexion", "Conecta primero el ESP32 por USB")
+            return
+        valores = list(self.controlador.porcentajes)
+        for i in range(5):
+            self.servo_manual[i].set(valores[i])
+            self.servo_texto[i].set(f"{valores[i]:.1f}%")
+        self.pinza_manual.set(valores[5])
+        self.pinza_texto.set(f"{valores[5]:.1f}%")
+
+    def _medir_distancia(self):
+        if self.controlador.robot is None:
+            messagebox.showerror("Sin conexion", "Conecta primero el ESP32 por USB")
+            return
+        if self.controlador.rutina_activa():
+            messagebox.showinfo("Rutina en curso", "Espera a que termine para medir")
+            return
+        if self._midiendo:
+            return
+        self.distancia_sensor.set("Midiendo...")
+        self._midiendo = True
+        self.boton_medir.state(["disabled"])
+        self._accion(self.controlador.leer_distancia_sensor, boton=self.boton_medir)
+
+    def _mover_servo(self, i):
+        if not self._permite_manual():
+            return
+        p = round(self.servo_manual[i].get(), 1)
+        self._accion(self.controlador.mover_servo_manual, i + 1, p)
+
+    def _mover_cinco(self):
+        if not self._permite_manual():
+            return
+        valores = [round(p.get(), 1) for p in self.servo_manual]
+        self._accion(self.controlador.mover_cinco_manual, valores)
+
+    def _mover_pinza(self):
+        if self._permite_manual():
+            self._accion(self.controlador.mover_pinza_manual,
+                         round(self.pinza_manual.get(), 1))
+
+    def _guardar_pinza(self):
+        if not self._permite_manual():
+            return
         try:
-            x, y, z, phi = [float(var.get().replace(",", ".")) for var in self.xyz]
+            abierta = float(self.pinza_abierta.get().replace(",", "."))
+            cerrada = float(self.pinza_cerrada.get().replace(",", "."))
         except ValueError:
-            messagebox.showerror("Coordenadas", "Ingresa números válidos")
+            messagebox.showerror("Pinza", "Ingresa porcentajes numericos")
             return
-        if not messagebox.askyesno("Mover el brazo", "¿Está despejada toda la trayectoria física?"):
+        if not (0 <= abierta <= 100 and 0 <= cerrada <= 100):
+            messagebox.showerror("Pinza", "Los porcentajes deben estar entre 0 y 100")
             return
-        self._accion(self.controlador.resolver_y_mover, x, y, z, phi)
+        self._accion(self.controlador.configurar_pinza_manual, abierta, cerrada)
+
+    def _pinza_abrir_cerrar(self, abrir):
+        if self._permite_manual():
+            self._accion(self.controlador.pinza_manual, abrir)
+
+    def _permite_manual(self):
+        if self.controlador.robot is None:
+            messagebox.showerror("Sin conexion", "Conecta primero el ESP32 por USB")
+            return False
+        if self.controlador.rutina_activa():
+            messagebox.showinfo("Rutina en curso", "No controles los servos mientras se ejecuta una rutina")
+            return False
+        if self.controlador._detenido or not self.activado:
+            messagebox.showerror("Brazo no disponible", "Activa HOME o utiliza Reanudar antes de mover")
+            return False
+        return True
+
+    def _ejecutar_rutina(self):
+        if self.controlador.robot is None:
+            messagebox.showerror("Sin conexión", "Conecta primero el ESP32 por USB.")
+            return
+        if self.controlador.rutina_activa():
+            messagebox.showinfo("Rutina en curso", "Espera a que termine la rutina actual.")
+            return
+        if self.controlador._detenido:
+            messagebox.showerror("Brazo detenido", "Utiliza Reanudar antes de ejecutar.")
+            return
+        numero = int(self.rutina_seleccion.get().split(" ", 1)[0])
+        self._accion(self.controlador.iniciar_rutina, numero)
 
     def _poner_texto(self, widget, texto):
         widget.configure(state="normal")
@@ -192,8 +393,20 @@ class Interfaz(tk.Tk):
                 elif tipo == "conexion":
                     self.estado.set("ESP32 conectado. Pulsa Activar / HOME.")
                 elif tipo == "boton":
+                    if datos[0] is self.boton_medir:
+                        self._midiendo = False
                     datos[0].state(["!disabled"])
+                elif tipo == "distancia_sensor":
+                    distancia = datos[0]
+                    self.distancia_sensor.set(
+                        "Sin eco" if distancia is None else f"{distancia:.2f} cm")
+                elif tipo == "calibracion_pinza":
+                    abierta, cerrada = datos
+                    self.pinza_abierta.set(f"{abierta:.1f}")
+                    self.pinza_cerrada.set(f"{cerrada:.1f}")
                 elif tipo == "error":
+                    if self._midiendo:
+                        self.distancia_sensor.set("Error")
                     self.estado.set("ERROR: " + datos[0])
                     self._log(datos[0])
                 elif tipo == "log":
@@ -220,6 +433,23 @@ class Interfaz(tk.Tk):
                 self.estado.set("RUTINA EN CURSO" if activado else "SIN ACTIVAR")
             else:
                 self.estado.set("MOVIENDO" if moviendo else "LISTO" if activado else "SIN ACTIVAR")
+        if (self.controlador.robot is None or
+                self.controlador.rutina_activa() or
+                self.controlador._detenido or not self.activado):
+            self.boton_rutina.state(["disabled"])
+        else:
+            self.boton_rutina.state(["!disabled"])
+        # No permitir movimientos manuales durante rutinas ni con STOP activo.
+        manual_habilitado = (self.controlador.robot is not None and
+                             not self.controlador.rutina_activa() and
+                             not self.controlador._detenido and self.activado)
+        for boton in self.controles_manuales:
+            boton.state(["!disabled"] if manual_habilitado else ["disabled"])
+        # Se puede medir sin HOME, incluso despues de STOP; no durante una rutina.
+        medir_habilitado = (self.controlador.robot is not None and
+                            not self.controlador.rutina_activa() and
+                            not self._midiendo)
+        self.boton_medir.state(["!disabled"] if medir_habilitado else ["disabled"])
         if not self._cerrando:
             self.after(120, self._actualizar)
 
@@ -233,9 +463,7 @@ class Interfaz(tk.Tk):
     def _cerrar(self):
         if self._cerrando:
             return
-        if self.controlador.rutina_activa():
-            if not messagebox.askyesno("Cerrar", "Hay una rutina en curso. ¿Detenerla y cerrar?"):
-                return
+        # Al cerrar se solicita la detencion y desconexion mediante el controlador.
         self._cerrando = True
         self.estado.set("Deteniendo y cerrando puerto...")
         def trabajo():

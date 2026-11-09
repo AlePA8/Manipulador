@@ -31,7 +31,7 @@ FILA_ORDEN = [
 
 # ---------------------------------------------------------------- movimiento
 PHI_AGARRE = -55.0     # inclinacion preferida de la pinza al tomar/dejar [grados]
-ALTURA_APROX = 5.0     # cm sobre el cubo antes de bajar en linea recta
+ALTURA_APROX = 4.0     # cm sobre el cubo antes de bajar en linea recta
 ALTURA_SEGURA = 11.0   # z de traslado (sobre la mesa) para no chocar la pila
 RADIO_TRASLADO = (19.0, 28.0)  # radio permitido al trasladarse en altura [cm]
 HOLGURA_DEJAR = 0.3   # cm extra al soltar un cubo sobre otro

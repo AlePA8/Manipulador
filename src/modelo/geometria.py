@@ -38,7 +38,7 @@ def pose_escaneo(px, py, actuales=None, z_mesa=None, phi_pref=None):
     z_mesa = C.Z_MESA if z_mesa is None else z_mesa
     phi_pref = C.PHI_ESCANEO if phi_pref is None else min(phi_pref, -30.0)
     distancias = sorted(range(7, 23), key=lambda d: abs(d - C.DIST_ESCANEO))
-    for phi in candidatos_phi(phi_pref, -90, -20):
+    for phi in candidatos_phi(phi_pref, -115, -20):
         for d in distancias:
             tcp = tcp_para_mirar(px, py, z_mesa, phi, d)
             q = cinematica_inversa(*tcp, phi, actuales)
@@ -87,10 +87,16 @@ class Escena:
         self.cubos = []
         for n in nombres:
             if n in C.POSES:
-                x, y, z = C.POSES[n]["xyz"]
+                x, y, _ = C.POSES[n]["xyz"]
             else:
-                (x, y), z = C.PUNTOS_RECOGIDA[n], C.Z_MESA + C.CUBO / 2
-            self.cubos.append({"nombre": n, "tomado": False, "p": np.array([x, y, z])})
+                x, y = C.PUNTOS_RECOGIDA[n]
+
+            z = C.Z_MESA + C.CUBO / 2
+            self.cubos.append({
+                "nombre": n, 
+                "tomado": False, 
+                "p": np.array([x, y, z])}
+                )
 
     def centros(self, tcp=None):
         out = []

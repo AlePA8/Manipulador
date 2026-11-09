@@ -70,6 +70,67 @@ class Controlador:
         robot.stop()
         self.avisar("log", "STOP enviado al brazo")
 
+    # Control manual por USB cuando Blynk no este disponible.
+    # Los porcentajes son normalizados 0-100, dentro de limites calibrados.
+    def _manual_disponible(self):
+        robot = self._exigir_libre()
+        if not robot.activado:
+            raise ErrorRobot("Activa HOME antes de mover los servos")
+        return robot
+
+    def mover_servo_manual(self, numero, porcentaje):
+        robot = self._manual_disponible()
+        if numero not in range(1, 6) or not 0 <= porcentaje <= 100:
+            raise ErrorRobot("Servo o porcentaje fuera de rango")
+        robot.comando(f"SET,{numero},{porcentaje:.2f}", ("LISTO,SET",))
+        self.avisar("log", f"Manual: servo {numero} a {porcentaje:.1f}%")
+
+    def mover_cinco_manual(self, valores):
+        robot = self._manual_disponible()
+        if len(valores) != 5 or any(not 0 <= v <= 100 for v in valores):
+            raise ErrorRobot("Porcentajes fuera de rango")
+        robot.mover_todos(list(valores) + [robot.pinza_objetivo])
+        self.avisar("log", "Manual: movimiento conjunto de 5 servos enviado")
+
+    def mover_pinza_manual(self, porcentaje):
+        robot = self._manual_disponible()
+        if not 0 <= porcentaje <= 100:
+            raise ErrorRobot("Porcentaje de pinza fuera de rango")
+        robot.comando(f"SET,6,{porcentaje:.2f}", ("LISTO,SET",))
+        robot.pinza_objetivo = porcentaje
+        self.avisar("log", f"Manual: pinza a {porcentaje:.1f}%")
+
+    def configurar_pinza_manual(self, abierta, cerrada):
+        robot = self._manual_disponible()
+        if not 0 <= abierta <= 100 or not 0 <= cerrada <= 100:
+            raise ErrorRobot("Calibracion de pinza fuera de rango")
+        robot.configurar_pinza(abierta, cerrada)
+        self.avisar("log", f"Pinza calibrada: abierta {abierta:.1f}%, cerrada {cerrada:.1f}%")
+
+    def pinza_manual(self, abrir):
+        robot = self._manual_disponible()
+        robot.pinza(abrir)
+        self.avisar("log", "Manual: pinza abierta" if abrir else "Manual: pinza cerrada")
+
+    def leer_calibracion_pinza(self):
+        robot = self._exigir_robot()
+        resp = robot.comando("PINZA?", ("PINZA,",)).split(",")
+        if len(resp) != 3:
+            raise ErrorRobot("No se pudo leer la calibracion de pinza")
+        self.avisar("calibracion_pinza", float(resp[1]), float(resp[2]))
+
+    def leer_distancia_sensor(self):
+        # El ultrasónico se consulta sin mover ningún servo.
+        robot = self._exigir_robot()
+        if self.rutina_activa():
+            raise ErrorRobot("No medir manualmente durante una rutina")
+        distancia = robot.distancia()
+        self.avisar("distancia_sensor", distancia)
+        if distancia is None:
+            self.avisar("log", "Ultrasonico: sin eco")
+        else:
+            self.avisar("log", f"Ultrasonico: {distancia:.2f} cm")
+
     def resolver_y_mover(self, x, y, z, phi):
         robot = self._exigir_libre()
         if not robot.activado:

@@ -179,7 +179,7 @@ class Rutina:
     def escanear(self, nombre):
         # Mira el punto con el sensor. Devuelve dict con presente, altura, etc.
         x, y, zc, phi_e, q_e = self._pose(nombre)
-        z_mesa = zc - C.CUBO / 2                       # altura de la mesa en ESE punto
+        z_mesa = C.Z_MESA                       # altura de la mesa en ESE punto
         self._reportar(f"ESCANEANDO {nombre}")
         q, phi, _ = pose_escaneo(x, y, self.q, z_mesa, phi_e)
         if q is None:
@@ -216,12 +216,9 @@ class Rutina:
 
     def tomar(self, res):
         x, y, phi = res["x"], res["y"], res["phi"]
-        z = res["z_tope"] - C.CUBO / 2                   # centro del objeto de mas arriba
-        z = max(z, res["z_mesa"] + C.CUBO / 2)
-        # El objeto de abajo se toma con la postura EXACTA que se enseno
-        exacto = res["q"] if (res["q"] is not None and abs(z - res["zc"]) < C.CUBO / 2) else None
-        if exacto is not None:
-            z = res["zc"]
+        # Utilizar la altura de agarre calibrada
+        z = res["zc"]
+        exacto = res["q"]
         self._reportar(f"TOMANDO {res['nombre']}")
         self.pinza(True)
         self.ir_seguro(x, y, z + C.ALTURA_APROX, phi)
@@ -252,7 +249,7 @@ class Rutina:
         encontrados = []
         for nombre in C.PUNTOS_RECOGIDA:
             x, y, zc, phi, _ = self._pose(nombre)
-            if pose_escaneo(x, y, self.q, zc - C.CUBO / 2, phi)[0] is None:
+            if pose_escaneo(x, y, self.q, C.Z_MESA)[0] is None:
                 self._log(f"  {nombre}: el sensor no alcanza a mirarlo. Se salta.")
                 continue
             res = self.escanear(nombre)
@@ -414,6 +411,10 @@ class Rutina:
         try:
             self.robot.velocidad(C.VELOCIDAD)
             self._leer_angulos()
+            # Mantener la garra abierta durante el escaneo
+            if numero in (1, 2, 3):
+                self.robot.configurar_pinza(95.0, 60.0)
+                self.pinza(True)
             self._reportar(f"EJECUTANDO {numero}")
             if numero == 1:
                 self._rutina_apilar()
